@@ -3,7 +3,7 @@ name: Push new jenkins docker image
 on:
   push:
     branches: dockeer-workflow
-    paths: 'docker/'
+    paths: 'docker'
   workflow_dispatch:
 
 jobs:
