@@ -2,9 +2,8 @@ name: Push new jenkins docker image
 
 on:
   push:
-    branches: dockeer-workflow
-    paths: 
-     - docker/*
+    branches: [ dockeer-workflow ]
+    paths: 'docker/**'
   workflow_dispatch:
 
 jobs:
