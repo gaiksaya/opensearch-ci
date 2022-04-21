@@ -3,7 +3,8 @@ name: Push new jenkins docker image
 on:
   push:
     branches: [ dockeer-workflow ]
-    # paths: 'docker/**'
+    paths: 
+      - docker/**
   workflow_dispatch:
 
 jobs:
@@ -25,4 +26,4 @@ jobs:
         with:
           context: "{{defaultContext}}:docker"
           push: true
-          tags: sayaligaikawad/jenkins:github
+          tags: jenkins:latest
