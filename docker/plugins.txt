@@ -130,4 +130,3 @@ workflow-scm-step
 workflow-step-api
 workflow-support
 ws-cleanup
-xml-job-to-job-dsl
