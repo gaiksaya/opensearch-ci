@@ -26,4 +26,4 @@ jobs:
         with:
           context: "{{defaultContext}}:docker"
           push: true
-          tags: jenkins:latest
+          tags: sayaligaikawad/jenkins:latest
