@@ -10,6 +10,7 @@ build-timestamp
 build-with-parameters
 cloudbees-folder
 configuration-as-code
+credentials:1129.vef26f5df883c
 description-setter
 disable-github-multibranch-status
 docker-custom-build-environment
