@@ -32,7 +32,6 @@ job-dsl
 job-restrictions
 jobConfigHistory
 ldap
-lockable-resources
 login-theme
 managed-scripts
 nodelabelparameter
