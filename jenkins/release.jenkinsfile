@@ -5,5 +5,5 @@ lib = library(identifier: 'jenkins@npm', retriever: modernSCM([
 
 standardReleasePipeline()
 {
-    publishToNpm(repository: 'https://github.com/gaiksaya/opensearch-ci', branch: 'test-npm')
+    publishToNpm(repository: 'https://github.com/gaiksaya/opensearch-ci', tag: 'test-npm')
 }
