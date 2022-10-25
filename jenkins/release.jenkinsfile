@@ -3,7 +3,7 @@ lib = library(identifier: 'jenkins@npm', retriever: modernSCM([
     remote: 'https://github.com/gaiksaya/opensearch-build-libraries-1.git',
 ]))
 
-standardReleasePipeline(overrideDockerImage: 'sayaligaikawad/clients:latest')
+standardReleasePipeline(overrideDockerImage: 'opensearchstaging/ci-runner:ci-runner-centos7-opensearch-dashboards-build-v2')
 {
     publishToNpm(repository: 'https://github.com/gaiksaya/opensearch-ci', tag: 'test-npm')
 }
