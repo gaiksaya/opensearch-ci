@@ -5,5 +5,5 @@ lib = library(identifier: 'jenkins@add-trigger', retriever: modernSCM([
 
 standardReleasePipelineWithGenericTrigger(tokenIdCredential: 'opensearch-ci-webhook-token')
 {
-    publishToNpm(repository: 'https://github.com/gaiksaya/opensearch-ci', tag: '1.0.0')
+    publishToNpm(repository: 'https://github.com/gaiksaya/opensearch-ci', tag: $tag)
 }
