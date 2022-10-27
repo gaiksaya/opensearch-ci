@@ -3,7 +3,9 @@ lib = library(identifier: 'jenkins@add-trigger', retriever: modernSCM([
     remote: 'https://github.com/gaiksaya/opensearch-build-libraries-1.git',
 ]))
 
-standardReleasePipelineWithGenericTrigger(tokenIdCredential: 'opensearch-ci-webhook-token')
+standardReleasePipelineWithGenericTrigger(tokenIdCredential: 'opensearch-ci-webhook-token',
+causeString: 'Successful release'
+publishRelease: true)
 {
     publishToNpm(repository: 'https://github.com/gaiksaya/opensearch-ci', tag: "$tag")
 }
