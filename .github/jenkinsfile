@@ -8,6 +8,7 @@ standardReleasePipelineWithGenericTrigger(
     causeString: 'A tag was cut on opensearch-project/oui repository causing this workflow to run',
     downloadReleaseAsset: true) {
         publishToNpm(
-            artifactPath: "${WORKSPACE}/ci/my-ci*.tgz"
+            repository: 'https://github.com/gaiksaya/opensearch-ci', 
+            tag: "$tag"
             )
     }
