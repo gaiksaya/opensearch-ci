@@ -13,15 +13,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v2
-      - name: pack
-        run: | 
-          npm pack 
-          mkdir ci && mv my-ci-stack*.tgz ci/my-ci.tgz 
-          tar -cvf artifacts.tar.gz ci
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
           draft: true
           generate_release_notes: true
-          files: |
-            artifacts.tar.gz
