@@ -1,4 +1,4 @@
-lib = library(identifier: 'jenkins@add-npm-arg-test', retriever: modernSCM([
+lib = library(identifier: 'jenkins@add-npm-arg-beta', retriever: modernSCM([
     $class: 'GitSCMSource',
     remote: 'https://github.com/gaiksaya/opensearch-build-libraries.git',
 ]))
@@ -6,5 +6,5 @@ lib = library(identifier: 'jenkins@add-npm-arg-test', retriever: modernSCM([
 standardReleasePipelineWithGenericTrigger(
     tokenIdCredential: 'jenkins-oui-generic-webhook-token',
     causeString: 'A tag was cut on opensearch-project/oui repository causing this workflow to run') {
-        publishToNpm(env, publicationType: "github")
+        publishToNpm(publicationType: "github")
     }
