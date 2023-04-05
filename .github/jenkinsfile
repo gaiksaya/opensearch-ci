@@ -6,5 +6,7 @@ lib = library(identifier: 'jenkins@add-npm-arg-beta', retriever: modernSCM([
 standardReleasePipelineWithGenericTrigger(
     tokenIdCredential: 'jenkins-oui-generic-webhook-token',
     causeString: 'A tag was cut on opensearch-project/oui repository causing this workflow to run') {
-        publishToNpm(publicationType: 'artifact')
+        publishToNpm(
+            publicationType: 'artifact',
+            artifactPath: "${WORKSPACE}/ci/my-ci*.tgz")
     }
