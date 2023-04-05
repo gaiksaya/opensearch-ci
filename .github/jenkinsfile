@@ -6,8 +6,5 @@ lib = library(identifier: 'jenkins@add-npm-arg-test', retriever: modernSCM([
 standardReleasePipelineWithGenericTrigger(
     tokenIdCredential: 'jenkins-oui-generic-webhook-token',
     causeString: 'A tag was cut on opensearch-project/oui repository causing this workflow to run') {
-        publishToNpm(
-            repository: "$repository",
-            tag: "$tag"
-            )
+        publishToNpm(publicationType: "github")
     }
