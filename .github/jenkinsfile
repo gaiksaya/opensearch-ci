@@ -7,5 +7,5 @@ standardReleasePipelineWithGenericTrigger(
     tokenIdCredential: 'jenkins-oui-generic-webhook-token',
     causeString: 'A tag was cut on opensearch-project/oui repository causing this workflow to run',
     downloadReleaseAsset: true) {
-        publishToNpm(repository: 'https://github.com/gaiksaya/opensearch-ci', tag: "$tag")
+        publishToNpm(repository: 'https://github.com/gaiksaya/opensearch-ci', tag: "$tag", artifactPath: 'hello')
     }

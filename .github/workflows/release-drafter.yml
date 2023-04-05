@@ -14,7 +14,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v2
       - name: pack
-        run: npm pack && mkdir ci && mv my-ci-stack*.tgz ci/ci.tar.gz && tar -cvf artifacts.tar.gz ci
+        run: npm pack && tar -cvf artifacts.tar.gz my-ci-stack*tgz
       - name: Release
         uses: softprops/action-gh-release@v1
         with:

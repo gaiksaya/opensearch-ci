@@ -1,6 +1,6 @@
 {
   "name": "my-ci-stack",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "bin": {
     "ci": "bin/ci-stack.js"
   },
