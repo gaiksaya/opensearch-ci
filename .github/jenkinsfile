@@ -1,4 +1,4 @@
-lib = library(identifier: 'jenkins@add-npm-arg-beta', retriever: modernSCM([
+lib = library(identifier: 'jenkins@add-npm-arg', retriever: modernSCM([
     $class: 'GitSCMSource',
     remote: 'https://github.com/gaiksaya/opensearch-build-libraries.git',
 ]))
