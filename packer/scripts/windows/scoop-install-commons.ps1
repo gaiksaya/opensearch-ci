@@ -87,7 +87,7 @@ Foreach ($jdkVersion in $jdkVersionList)
     java -version
 }
 # Need to reset to jdk8 run Jenkins Agent
-scoop reset temurin8-jdk
+scoop reset temurin11-jdk
 $JAVA_HOME_TEMP = [System.Environment]::GetEnvironmentVariable("JAVA_HOME", [System.EnvironmentVariableTarget]::User).replace("\", "/")
 $JAVA_HOME_TEMP
 [System.Environment]::SetEnvironmentVariable('JAVA_HOME', "$JAVA_HOME_TEMP", [System.EnvironmentVariableTarget]::User)
