@@ -3,11 +3,16 @@
 !jest.config.js
 *.d.ts
 node_modules
+.DS_Store
+# We do not want to track this file as it is generated only if user provides certain params.
+resources/jenkins.yaml
+
 
 # CDK asset staging directory
 .cdk.staging
 cdk.out
-
+cdk.context.json
 # excluding intellij Idea files
 *.iml
 .idea/
+.vscode/

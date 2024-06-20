@@ -6,21 +6,22 @@
  * compatible open source license.
  */
 
+import { CfnOutput, Stack } from 'aws-cdk-lib';
+import { AutoScalingGroup } from 'aws-cdk-lib/aws-autoscaling';
+import { SecurityGroup, Vpc } from 'aws-cdk-lib/aws-ec2';
 import {
-  Instance, Peer, SecurityGroup, Vpc,
-} from '@aws-cdk/aws-ec2';
-import {
-  ApplicationListener, ApplicationLoadBalancer, ApplicationTargetGroup, ListenerCertificate, Protocol,
-} from '@aws-cdk/aws-elasticloadbalancingv2';
-import { InstanceTarget } from '@aws-cdk/aws-elasticloadbalancingv2-targets';
-import { CfnOutput, Stack } from '@aws-cdk/core';
+  ApplicationListener, ApplicationLoadBalancer, ApplicationProtocol, ApplicationTargetGroup, ListenerCertificate, Protocol, SslPolicy,
+} from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import { PolicyStatement, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
+import { Bucket } from 'aws-cdk-lib/aws-s3';
 
 export interface JenkinsExternalLoadBalancerProps {
   readonly vpc: Vpc;
   readonly sg: SecurityGroup;
-  readonly targetInstance: Instance;
+  readonly targetInstance: AutoScalingGroup;
   readonly listenerCertificate: ListenerCertificate;
   readonly useSsl: boolean;
+  readonly accessLogBucket: Bucket;
 }
 
 export class JenkinsExternalLoadBalancer {
@@ -31,6 +32,9 @@ export class JenkinsExternalLoadBalancer {
   public readonly targetGroup: ApplicationTargetGroup;
 
   constructor(stack: Stack, props: JenkinsExternalLoadBalancerProps) {
+    const accessPort = props.useSsl ? 443 : 80;
+    const accessLoggingPrefix = 'loadBalancerAccessLogs';
+
     // Using an ALB so it can be part of a security group rather than by whitelisting ip addresses
     this.loadBalancer = new ApplicationLoadBalancer(stack, 'JenkinsALB', {
       vpc: props.vpc,
@@ -38,22 +42,43 @@ export class JenkinsExternalLoadBalancer {
       internetFacing: true,
     });
 
-    const accessPort = props.useSsl ? 443 : 80;
-
     this.listener = this.loadBalancer.addListener('JenkinsListener', {
+      sslPolicy: props.useSsl ? SslPolicy.RECOMMENDED : undefined,
       port: accessPort,
-      open: true,
+      open: false,
       certificates: props.useSsl ? [props.listenerCertificate] : undefined,
     });
 
+    if (props.useSsl) {
+      this.loadBalancer.addRedirect({
+        sourceProtocol: ApplicationProtocol.HTTP,
+        sourcePort: 80,
+        targetProtocol: ApplicationProtocol.HTTPS,
+        targetPort: 443,
+      });
+    }
+
     this.targetGroup = this.listener.addTargets('MainJenkinsNodeTarget', {
       port: accessPort,
-      targets: [new InstanceTarget(props.targetInstance, accessPort)],
+      targets: [props.targetInstance],
       healthCheck: {
         protocol: props.useSsl ? Protocol.HTTPS : Protocol.HTTP,
         path: '/login',
       },
     });
+
+    this.loadBalancer.logAccessLogs(props.accessLogBucket, accessLoggingPrefix);
+
+    props.accessLogBucket.addToResourcePolicy(
+      new PolicyStatement({
+        actions: ['s3:PutObject'],
+        principals: [
+          new ServicePrincipal('logdelivery.elasticloadbalancing.amazonaws.com'),
+        ],
+        resources: [`${props.accessLogBucket.bucketArn}/${accessLoggingPrefix}/*`],
+
+      }),
+    );
 
     new CfnOutput(stack, 'Jenkins External Load Balancer Dns', {
       value: this.loadBalancer.loadBalancerDnsName,

@@ -6,206 +6,294 @@
  * compatible open source license.
  */
 
-import { CfnInstanceProfile, ServicePrincipal, Role } from '@aws-cdk/aws-iam';
-import { Fn, Stack, Tags } from '@aws-cdk/core';
-import { KeyPair } from 'cdk-ec2-key-pair';
-import {
-  InitCommand, InitElement, InitFile, InitFileOptions,
-} from '@aws-cdk/aws-ec2';
-import { JenkinsMainNode } from './jenkins-main-node';
+import { Stack } from 'aws-cdk-lib';
+import { AmazonLinuxCpuType, AmazonLinuxGeneration, MachineImage } from 'aws-cdk-lib/aws-ec2';
+import { AgentNodeProps } from './agent-node-config';
 
-export interface AgentNodeConfig{
-  amiId : string;
-  ec2CloudName : string;
-  instanceType : string;
-  workerLabelString : string;
-  numberOfExecutors : string;
-  remoteUser : string;
-}
+export class AgentNodes {
+  // Refer: https://docs.aws.amazon.com/AWSJavaSDK/latest/javadoc/com/amazonaws/services/ec2/model/InstanceType.html for instance types
+  readonly AL2023_X64: AgentNodeProps;
 
-export interface AgentNodeProps{
-  readonly agentNodeSecurityGroup : string;
-  readonly subnetId : string;
-}
+  readonly AL2_X64_DOCKER_HOST: AgentNodeProps;
 
-export class AgentNode {
-  public readonly AgentNodeInstanceProfileArn: string;
+  readonly AL2023_X64_DOCKER_HOST: AgentNodeProps;
 
-  public readonly SSHEC2KeySecretId: string;
+  readonly AL2023_X64_DOCKER_HOST_EXTRA: AgentNodeProps;
 
-  public readonly InitScript: string = 'sudo mkdir -p /var/jenkins/ && sudo chown -R ec2-user:ec2-user /var/jenkins '
-    + '&& sudo yum install -y java-1.8.0-openjdk cmake python3 python3-pip && sudo yum groupinstall -y \'Development Tools\' '
-    + '&& sudo ln -sfn `which pip3` /usr/bin/pip && pip3 install pipenv && sudo ln -s ~/.local/bin/pipenv /usr/local/bin';
+  readonly AL2023_ARM64: AgentNodeProps;
+
+  readonly AL2_ARM64_DOCKER_HOST: AgentNodeProps;
+
+  readonly AL2023_ARM64_DOCKER_HOST: AgentNodeProps;
+
+  readonly AL2023_ARM64_DOCKER_HOST_EXTRA: AgentNodeProps;
+
+  readonly AL2023_X64_BENCHMARK_TEST: AgentNodeProps;
+
+  readonly UBUNTU2004_X64_GRADLE_CHECK: AgentNodeProps;
+
+  readonly UBUNTU2004_X64_DOCKER_BUILDER: AgentNodeProps;
+
+  readonly MACOS12_X64_MULTI_HOST: AgentNodeProps;
+
+  readonly WINDOWS2019_X64_DOCKER_HOST: AgentNodeProps;
+
+  readonly WINDOWS2019_X64_DOCKER_BUILDER: AgentNodeProps;
+
+  readonly WINDOWS2019_X64_GRADLE_CHECK: AgentNodeProps;
+
+  readonly AL2_X64_DEFAULT_AGENT: AgentNodeProps;
+
+  readonly AL2_ARM64_DEFAULT_AGENT: AgentNodeProps;
 
   constructor(stack: Stack) {
-    const key = new KeyPair(stack, 'AgentNode-KeyPair', {
-      name: 'AgentNodeKeyPair',
-      description: 'KeyPair used by Jenkins Main Node to SSH into Agent Nodes',
-    });
-    Tags.of(key)
-      .add('jenkins:credentials:type', 'sshUserPrivateKey');
-    const AgentNodeRole = new Role(stack, 'JenkinsAgentNodeRole', {
-      assumedBy: new ServicePrincipal('ec2.amazonaws.com'),
-    });
-    const AgentNodeInstanceProfile = new CfnInstanceProfile(stack, 'JenkinsAgentNodeInstanceProfile', { roles: [AgentNodeRole.roleName] });
-    this.AgentNodeInstanceProfileArn = AgentNodeInstanceProfile.attrArn.toString();
-    this.SSHEC2KeySecretId = Fn.join('/', ['ec2-ssh-key', key.keyPairName.toString(), 'private']);
-  }
-
-  public asInitFile(filePath: string, stackConfig: AgentNodeProps, config: AgentNodeConfig, stackRegion: string, options?: InitFileOptions): InitFile {
-    return InitFile.fromString(filePath,
-      `
-    import hudson.model.*
-    import jenkins.model.*
-    import hudson.plugins.ec2.*
-    import com.amazonaws.services.ec2.model.InstanceType
-
-    def instance = Jenkins.getInstance()
-    def init_script = "${this.InitScript}"
-    def instance_profile_arn = "${this.AgentNodeInstanceProfileArn}"
-    def sshKeysASMSecretId = "${this.SSHEC2KeySecretId}"
-
-    // Agent node configuration specific to each node
-    def ec2_cloud_name = "${config.ec2CloudName}"
-    def instance_type = "${config.instanceType}"
-    def worker_label_string = "${config.workerLabelString}"
-    def number_of_executors = "${config.numberOfExecutors}"
-    def remote_user = "${config.remoteUser}"
-    def ami_id = "${config.amiId}"
-
-    // Values that are imported from the stack
-    def region = "${stackRegion}"
-    def security_group = "${stackConfig.agentNodeSecurityGroup.toString()}"
-    def subnet_id = "${stackConfig.subnetId.toString()}"
-    def ec2_tags = [new EC2Tag('Name', 'jenkins-agent-node')]
-    
-    
-    // SlaveTemplate ref: https://github.com/jenkinsci/ec2-plugin/blob/master/src/main/java/hudson/plugins/ec2/SlaveTemplate.java
-    def agent_node_template = new SlaveTemplate(
-      // String ami
-      ami_id,
-      // String zone
-      '',
-      // SpotConfiguration spotConfig
-      null,
-      // String securityGroups
-      security_group,
-      // String remoteFS
-      '/var/jenkins',
-      // InstanceType type
-      InstanceType.fromValue(instance_type),
-      // boolean ebsOptimized
-      false,
-      // String labelString
-      worker_label_string,
-      // Node.Mode mode
-      Node.Mode.NORMAL,
-      // String description
-      'Jenkins Agent Node',
-      // String initScript
-      init_script,
-      // String tmpDir
-      '',
-      // String userData
-      '',
-      // String numExecutors
-      number_of_executors,
-      // String remoteAdmin
-      remote_user,
-      // AMITypeData amiType
-      new UnixData(null, null, null, null),
-      // String jvmopts
-      '',
-      // boolean stopOnTerminate
-      false,
-      // String subnetId
-      subnet_id,
-      // List<EC2Tag> tags
-      ec2_tags,
-      // String idleTerminationMinutes
-      '30',
-      //int minimumNumberOfInstances,
-      1,
-      //int minimumNumberOfSpareInstances,
-      1,
-      // String instanceCapStr
-      '20',
-      // String iamInstanceProfile
-      instance_profile_arn,
-      //  boolean deleteRootOnTermination
-      true,
-      // boolean useEphemeralDevices
-      false,
-      // String launchTimeoutStr
-      '1800',
-      // boolean associatePublicIp
-      false,
-      // String customDeviceMapping
-      '/dev/xvda=:100:true:::encrypted',
-      // boolean connectBySSHProcess
-      false,
-      // boolean monitoring,
-      true,
-      // boolean t2Unlimited,
-      false,
-      // ConnectionStrategy connectionStrategy,
-      null,
-      // int maxTotalUses,
-      -1,
-      // List<? extends NodeProperty<?>> nodeProperties,
-      null,
-      // HostKeyVerificationStrategyEnum hostKeyVerificationStrategy,
-      HostKeyVerificationStrategyEnum.OFF,
-      //Tenancy tenancy,
-      Tenancy.Default,
-      //EbsEncryptRootVolume ebsEncryptRootVolume,
-      EbsEncryptRootVolume.ENCRYPTED,
-    )
-    
-    // AmazonEC2Cloud ref: https://github.com/jenkinsci/ec2-plugin/blob/master/src/main/java/hudson/plugins/ec2/AmazonEC2Cloud.java
-    def new_cloud = new AmazonEC2Cloud(
-      // String cloudName
-      ec2_cloud_name,
-      // boolean useInstanceProfileForCredentials
-      true,
-      // String credentialsId
-      '',
-      // String region
-      region,
-      // String privateKey
-      null,
-      // String sshKeysCredentialsId
-      sshKeysASMSecretId,
-      // String instanceCapStr
-      "10",
-      // List<? extends SlaveTemplate> templates
-      [agent_node_template],
-      // String roleArn: We have instance profile with a role attached to the instance
-      '',
-      // String roleSessionName
-      ''
-    )
-
-    instance.clouds.add(new_cloud)
-    instance.save()`);
-  }
-
-  public configElements(stackRegion: string, agentNodeProps: AgentNodeProps, al2x64AgentNodeConfig: AgentNodeConfig,
-    al2arm64AgentNodeConfig: AgentNodeConfig): InitElement[] {
-    return [
-    // Create groovy script that holds the agent Node config for EC2 plugin ref:https://gist.github.com/vrivellino/97954495938e38421ba4504049fd44ea
-      this.asInitFile(`/${al2x64AgentNodeConfig.ec2CloudName}.groovy`, agentNodeProps, al2x64AgentNodeConfig, stackRegion),
-
-      // Run the above groovy script
-      // eslint-disable-next-line max-len
-      InitCommand.shellCommand(`java -jar /jenkins-cli.jar -s http://localhost:8080 -auth @${JenkinsMainNode.JENKINS_DEFAULT_ID_PASS_PATH} groovy = < /${al2x64AgentNodeConfig.ec2CloudName}.groovy`),
-
-      // Generating groovy script for arm64 Agent Node
-      this.asInitFile(`/${al2arm64AgentNodeConfig.ec2CloudName}.groovy`, agentNodeProps, al2arm64AgentNodeConfig, stackRegion),
-
-      // Run the arm64 groovy script to set up ARM64 agent
-      // eslint-disable-next-line max-len
-      InitCommand.shellCommand(`java -jar /jenkins-cli.jar -s http://localhost:8080 -auth @${JenkinsMainNode.JENKINS_DEFAULT_ID_PASS_PATH} groovy = < /${al2arm64AgentNodeConfig.ec2CloudName}.groovy`),
-    ];
+    this.AL2023_X64 = {
+      agentType: 'unix',
+      customDeviceMapping: '/dev/xvda=:300:true:::encrypted',
+      workerLabelString: 'Jenkins-Agent-AL2023-X64-C54xlarge-Single-Host',
+      instanceType: 'C54xlarge',
+      remoteUser: 'ec2-user',
+      maxTotalUses: -1,
+      minimumNumberOfSpareInstances: 1,
+      numExecutors: 1,
+      amiId: 'ami-0d09563cd5663bdc7',
+      initScript: 'sudo dnf clean all && sudo rm -rf /var/cache/dnf && sudo dnf repolist &&'
+          + ' sudo dnf update --releasever=latest --skip-broken --exclude=openssh* --exclude=docker* --exclude=gh* --exclude=python* -y && docker ps',
+      remoteFs: '/var/jenkins',
+    };
+    this.AL2_X64_DOCKER_HOST = {
+      agentType: 'unix',
+      customDeviceMapping: '/dev/xvda=:300:true:::encrypted',
+      workerLabelString: 'Jenkins-Agent-AL2-X64-C54xlarge-Docker-Host',
+      instanceType: 'C54xlarge',
+      remoteUser: 'ec2-user',
+      maxTotalUses: -1,
+      minimumNumberOfSpareInstances: 1,
+      numExecutors: 4,
+      amiId: 'ami-047328312ef36d12b',
+      initScript: 'sudo yum clean all && sudo rm -rf /var/cache/yum /var/lib/yum/history && sudo yum repolist &&'
+      + ' sudo yum update --skip-broken --exclude=openssh* --exclude=docker* --exclude=gh* -y && docker ps',
+      remoteFs: '/var/jenkins',
+    };
+    this.AL2023_X64_DOCKER_HOST = {
+      agentType: 'unix',
+      customDeviceMapping: '/dev/xvda=:300:true:::encrypted',
+      workerLabelString: 'Jenkins-Agent-AL2023-X64-C54xlarge-Docker-Host',
+      instanceType: 'C54xlarge',
+      remoteUser: 'ec2-user',
+      maxTotalUses: -1,
+      minimumNumberOfSpareInstances: 3,
+      numExecutors: 4,
+      amiId: 'ami-0d09563cd5663bdc7',
+      initScript: 'sudo dnf clean all && sudo rm -rf /var/cache/dnf && sudo dnf repolist &&'
+          + ' sudo dnf update --releasever=latest --skip-broken --exclude=openssh* --exclude=docker* --exclude=gh* --exclude=python* -y && docker ps',
+      remoteFs: '/var/jenkins',
+    };
+    this.AL2023_X64_DOCKER_HOST_EXTRA = {
+      agentType: 'unix',
+      customDeviceMapping: '/dev/xvda=:600:true:::encrypted',
+      workerLabelString: 'Jenkins-Agent-AL2023-X64-M54xlarge-Docker-Host',
+      instanceType: 'M54xlarge',
+      remoteUser: 'ec2-user',
+      maxTotalUses: -1,
+      minimumNumberOfSpareInstances: 1,
+      numExecutors: 4,
+      amiId: 'ami-0d09563cd5663bdc7',
+      initScript: 'sudo dnf clean all && sudo rm -rf /var/cache/dnf && sudo dnf repolist &&'
+          + ' sudo dnf update --releasever=latest --skip-broken --exclude=openssh* --exclude=docker* --exclude=gh* --exclude=python* -y && docker ps',
+      remoteFs: '/var/jenkins',
+    };
+    this.AL2023_ARM64 = {
+      agentType: 'unix',
+      customDeviceMapping: '/dev/xvda=:300:true:::encrypted',
+      workerLabelString: 'Jenkins-Agent-AL2023-Arm64-C6g4xlarge-Single-Host',
+      instanceType: 'C6g4xlarge',
+      remoteUser: 'ec2-user',
+      maxTotalUses: -1,
+      minimumNumberOfSpareInstances: 1,
+      numExecutors: 1,
+      amiId: 'ami-0444fd195657f193f',
+      initScript: 'sudo dnf clean all && sudo rm -rf /var/cache/dnf && sudo dnf repolist &&'
+          + ' sudo dnf update --releasever=latest --skip-broken --exclude=openssh* --exclude=docker* --exclude=gh* --exclude=python* -y && docker ps',
+      remoteFs: '/var/jenkins',
+    };
+    this.AL2_ARM64_DOCKER_HOST = {
+      agentType: 'unix',
+      customDeviceMapping: '/dev/xvda=:300:true:::encrypted',
+      workerLabelString: 'Jenkins-Agent-AL2-Arm64-C6g4xlarge-Docker-Host',
+      instanceType: 'C6g4xlarge',
+      remoteUser: 'ec2-user',
+      maxTotalUses: -1,
+      minimumNumberOfSpareInstances: 1,
+      numExecutors: 4,
+      amiId: 'ami-06ba4c81e8dd7ab49',
+      initScript: 'sudo yum clean all && sudo rm -rf /var/cache/yum /var/lib/yum/history && sudo yum repolist &&'
+      + ' sudo yum update --skip-broken --exclude=openssh* --exclude=docker* --exclude=gh* -y && docker ps',
+      remoteFs: '/var/jenkins',
+    };
+    this.AL2023_ARM64_DOCKER_HOST = {
+      agentType: 'unix',
+      customDeviceMapping: '/dev/xvda=:300:true:::encrypted',
+      workerLabelString: 'Jenkins-Agent-AL2023-Arm64-C6g4xlarge-Docker-Host',
+      instanceType: 'C6g4xlarge',
+      remoteUser: 'ec2-user',
+      maxTotalUses: -1,
+      minimumNumberOfSpareInstances: 3,
+      numExecutors: 4,
+      amiId: 'ami-0444fd195657f193f',
+      initScript: 'sudo dnf clean all && sudo rm -rf /var/cache/dnf && sudo dnf repolist &&'
+          + ' sudo dnf update --releasever=latest --skip-broken --exclude=openssh* --exclude=docker* --exclude=gh* --exclude=python* -y && docker ps',
+      remoteFs: '/var/jenkins',
+    };
+    this.AL2023_ARM64_DOCKER_HOST_EXTRA = {
+      agentType: 'unix',
+      customDeviceMapping: '/dev/xvda=:600:true:::encrypted',
+      workerLabelString: 'Jenkins-Agent-AL2023-Arm64-M6g4xlarge-Docker-Host',
+      instanceType: 'M6g4xlarge',
+      remoteUser: 'ec2-user',
+      maxTotalUses: -1,
+      minimumNumberOfSpareInstances: 1,
+      numExecutors: 4,
+      amiId: 'ami-0444fd195657f193f',
+      initScript: 'sudo dnf clean all && sudo rm -rf /var/cache/dnf && sudo dnf repolist &&'
+          + ' sudo dnf update --releasever=latest --skip-broken --exclude=openssh* --exclude=docker* --exclude=gh* --exclude=python* -y && docker ps',
+      remoteFs: '/var/jenkins',
+    };
+    this.AL2023_X64_BENCHMARK_TEST = {
+      agentType: 'unix',
+      customDeviceMapping: '/dev/xvda=:300:true:::encrypted',
+      workerLabelString: 'Jenkins-Agent-AL2023-X64-M52xlarge-Benchmark-Test',
+      instanceType: 'M52xlarge',
+      remoteUser: 'ec2-user',
+      maxTotalUses: -1,
+      minimumNumberOfSpareInstances: 1,
+      numExecutors: 2,
+      amiId: 'ami-09f55bf0827296c51',
+      initScript: 'sudo dnf clean all && sudo rm -rf /var/cache/dnf && sudo dnf repolist &&'
+          + ' sudo dnf update --releasever=latest --skip-broken --exclude=openssh* --exclude=docker* --exclude=gh* --exclude=python* -y && docker ps',
+      remoteFs: '/var/jenkins',
+    };
+    this.UBUNTU2004_X64_GRADLE_CHECK = {
+      agentType: 'unix',
+      customDeviceMapping: '/dev/sda1=:300:true:::encrypted',
+      workerLabelString: 'Jenkins-Agent-Ubuntu2004-X64-M58xlarge-Single-Host',
+      instanceType: 'M58xlarge',
+      remoteUser: 'ubuntu',
+      maxTotalUses: 1,
+      minimumNumberOfSpareInstances: 1,
+      numExecutors: 1,
+      amiId: 'ami-0182cef5fe6837adb',
+      initScript: 'sudo apt-mark hold docker docker.io openssh-server gh grub-efi* shim-signed && docker ps &&'
+      + ' sudo apt-get update -y && (sudo killall -9 apt-get apt 2>&1 || echo) && sudo env "DEBIAN_FRONTEND=noninteractive" apt-get upgrade -y',
+      remoteFs: '/var/jenkins',
+    };
+    this.UBUNTU2004_X64_DOCKER_BUILDER = {
+      agentType: 'unix',
+      customDeviceMapping: '/dev/sda1=:300:true:::encrypted',
+      workerLabelString: 'Jenkins-Agent-Ubuntu2004-X64-M52xlarge-Docker-Builder',
+      instanceType: 'M52xlarge',
+      remoteUser: 'ubuntu',
+      maxTotalUses: -1,
+      minimumNumberOfSpareInstances: 2,
+      numExecutors: 1,
+      amiId: 'ami-0182cef5fe6837adb',
+      initScript: 'sudo apt-mark hold docker docker.io openssh-server gh grub-efi* shim-signed && docker ps &&'
+      + ' sudo apt-get update -y && (sudo killall -9 apt-get apt 2>&1 || echo) && sudo env "DEBIAN_FRONTEND=noninteractive" apt-get upgrade -y',
+      remoteFs: '/var/jenkins',
+    };
+    this.MACOS12_X64_MULTI_HOST = {
+      agentType: 'mac',
+      customDeviceMapping: '/dev/sda1=:300:true:gp3::encrypted',
+      workerLabelString: 'Jenkins-Agent-MacOS12-X64-Mac1Metal-Multi-Host',
+      instanceType: 'Mac1Metal',
+      remoteUser: 'ec2-user',
+      maxTotalUses: -1,
+      minimumNumberOfSpareInstances: 1,
+      numExecutors: 6,
+      amiId: 'ami-011470caf4b068ba5',
+      initScript: 'echo',
+      remoteFs: '/var/jenkins',
+    };
+    this.WINDOWS2019_X64_DOCKER_HOST = {
+      agentType: 'windows',
+      customDeviceMapping: '/dev/sda1=:600:true:::encrypted',
+      workerLabelString: 'Jenkins-Agent-Windows2019-X64-M54xlarge-Docker-Host',
+      instanceType: 'M54xlarge',
+      remoteUser: 'Administrator',
+      maxTotalUses: 10,
+      minimumNumberOfSpareInstances: 4,
+      numExecutors: 4,
+      amiId: 'ami-01f81782f09e99d95',
+      initScript: 'echo %USERNAME% && dockerd --register-service && net start docker && echo started docker deamon && docker ps && '
+          + 'echo initializing docker images now waiting for 5min && git clone https://github.com/opensearch-project/opensearch-build.git && '
+          + 'bash.exe -c "docker run --rm -it  --name docker-windows-test -d `opensearch-build/docker/ci/get-ci-images.sh '
+          + '-p windows2019-servercore -u opensearch -t build | head -1` bash.exe && sleep 5" && docker exec docker-windows-test whoami && '
+          + 'docker ps && docker stop docker-windows-test && docker ps && rm -rf opensearch-build',
+      remoteFs: 'C:/Users/Administrator/jenkins',
+    };
+    this.WINDOWS2019_X64_DOCKER_BUILDER = {
+      agentType: 'windows',
+      customDeviceMapping: '/dev/sda1=:300:true:::encrypted',
+      workerLabelString: 'Jenkins-Agent-Windows2019-X64-M54xlarge-Docker-Builder',
+      instanceType: 'M54xlarge',
+      remoteUser: 'Administrator',
+      maxTotalUses: 10,
+      minimumNumberOfSpareInstances: 1,
+      numExecutors: 1,
+      amiId: 'ami-01f81782f09e99d95',
+      initScript: 'echo %USERNAME% && dockerd --register-service && net start docker && echo started docker deamon && docker ps && '
+          + 'echo initializing docker images now waiting for 5min && git clone https://github.com/opensearch-project/opensearch-build.git && '
+          + 'bash.exe -c "docker run --rm -it  --name docker-windows-test -d `opensearch-build/docker/ci/get-ci-images.sh '
+          + '-p windows2019-servercore -u opensearch -t build | head -1` bash.exe && sleep 5" && docker exec docker-windows-test whoami && '
+          + 'docker ps && docker stop docker-windows-test && docker ps && rm -rf opensearch-build',
+      remoteFs: 'C:/Users/Administrator/jenkins',
+    };
+    this.WINDOWS2019_X64_GRADLE_CHECK = {
+      agentType: 'windows',
+      customDeviceMapping: '/dev/sda1=:300:true:::encrypted',
+      workerLabelString: 'Jenkins-Agent-Windows2019-X64-C524xlarge-Single-Host',
+      instanceType: 'C524xlarge',
+      remoteUser: 'Administrator',
+      maxTotalUses: 1,
+      minimumNumberOfSpareInstances: 1,
+      numExecutors: 1,
+      amiId: 'ami-0ca4f0ba85855e148',
+      initScript: 'echo',
+      remoteFs: 'C:/Users/Administrator/jenkins',
+    };
+    this.AL2_X64_DEFAULT_AGENT = {
+      agentType: 'unix',
+      customDeviceMapping: '/dev/xvda=:300:true:::encrypted',
+      workerLabelString: 'Jenkins-Default-Agent-X64-C5xlarge-Single-Host',
+      instanceType: 'C54xlarge',
+      remoteUser: 'ec2-user',
+      maxTotalUses: -1,
+      minimumNumberOfSpareInstances: 1,
+      numExecutors: 1,
+      amiId: MachineImage.latestAmazonLinux2023({
+        cpuType: AmazonLinuxCpuType.X86_64,
+      }).getImage(stack).imageId.toString(),
+      initScript: 'sudo amazon-linux-extras install java-openjdk11 -y && sudo yum install -y cmake python3 python3-pip && '
+          + 'sudo yum groupinstall -y \'Development Tools\' && sudo ln -sfn `which pip3` /usr/bin/pip && '
+          + 'pip3 install pipenv && sudo ln -s ~/.local/bin/pipenv /usr/local/bin',
+      remoteFs: '/home/ec2-user',
+    };
+    this.AL2_ARM64_DEFAULT_AGENT = {
+      agentType: 'unix',
+      customDeviceMapping: '/dev/xvda=:300:true:::encrypted',
+      workerLabelString: 'Jenkins-Default-Agent-ARM64-C5xlarge-Single-Host',
+      instanceType: 'C6g4xlarge',
+      remoteUser: 'ec2-user',
+      maxTotalUses: -1,
+      minimumNumberOfSpareInstances: 1,
+      numExecutors: 1,
+      amiId: MachineImage.latestAmazonLinux2023({
+        cpuType: AmazonLinuxCpuType.ARM_64,
+      }).getImage(stack).imageId.toString(),
+      initScript: 'sudo amazon-linux-extras install java-openjdk11 -y && sudo yum install -y cmake python3 python3-pip && '
+          + 'sudo yum groupinstall -y \'Development Tools\' && sudo ln -sfn `which pip3` /usr/bin/pip && '
+          + 'pip3 install pipenv && sudo ln -s ~/.local/bin/pipenv /usr/local/bin',
+      remoteFs: '/home/ec2-user',
+    };
   }
 }

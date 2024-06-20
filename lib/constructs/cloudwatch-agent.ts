@@ -6,10 +6,10 @@
  * compatible open source license.
  */
 
-import { InitFile, InitFileOptions } from '@aws-cdk/aws-ec2';
+import { InitFile, InitFileOptions } from 'aws-cdk-lib/aws-ec2';
 import { CloudwatchAgentSection } from './cloudwatch/agent-section';
-import { CloudwatchLogsSection } from './cloudwatch/logs-section';
 import { CloudwatchMetricsSection } from './cloudwatch/metrics-section';
+import { CloudwatchLogsSection } from './cloudwatch/logs-section';
 
 export interface CloudwatchAgentConfig {
   agent: CloudwatchAgentSection;

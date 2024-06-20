@@ -6,18 +6,38 @@
  * compatible open source license.
  */
 
-import { Duration, Stack } from '@aws-cdk/core';
+import { CfnOutput, Duration, Stack } from 'aws-cdk-lib';
 import {
-  AmazonLinuxGeneration, BlockDeviceVolume, CloudFormationInit, InitCommand, InitElement, InitFile, InitPackage, Instance,
-  InstanceClass, InstanceSize, InstanceType, MachineImage, SecurityGroup, SubnetType, Vpc,
-} from '@aws-cdk/aws-ec2';
-import { ManagedPolicy, PolicyStatement } from '@aws-cdk/aws-iam';
-import { Metric, Unit } from '@aws-cdk/aws-cloudwatch';
+  AutoScalingGroup, BlockDeviceVolume, Monitoring, Signals,
+} from 'aws-cdk-lib/aws-autoscaling';
+import { Metric, Unit } from 'aws-cdk-lib/aws-cloudwatch';
+import {
+  AmazonLinuxCpuType,
+  CloudFormationInit,
+  InitCommand,
+  InitElement,
+  InitFile,
+  InitPackage,
+  InstanceClass,
+  InstanceSize,
+  InstanceType,
+  MachineImage,
+  SecurityGroup,
+  SubnetType,
+  Vpc,
+} from 'aws-cdk-lib/aws-ec2';
+import { FileSystem, PerformanceMode, ThroughputMode } from 'aws-cdk-lib/aws-efs';
+import {
+  IManagedPolicy, ManagedPolicy, PolicyStatement, Role, ServicePrincipal,
+} from 'aws-cdk-lib/aws-iam';
+import { writeFileSync } from 'fs';
+import { dump } from 'js-yaml';
 import { join } from 'path';
 import { CloudwatchAgent } from '../constructs/cloudwatch-agent';
-import { JenkinsPlugins } from './jenkins-plugins';
-import { AgentNode, AgentNodeProps } from './agent-nodes';
-import { CloudAgentNodeConfig } from './agent-node-config';
+import { AgentNodeConfig, AgentNodeNetworkProps, AgentNodeProps } from './agent-node-config';
+import { EnvConfig } from './env-config';
+import { OidcConfig } from './oidc-config';
+import { ViewsConfig } from './views';
 
 interface HttpConfigProps {
   readonly redirectUrlArn: string;
@@ -30,15 +50,28 @@ interface HttpConfigProps {
 interface OidcFederateProps {
   readonly oidcCredArn: string;
   readonly runWithOidc: boolean;
+  readonly adminUsers?: string[];
 }
 
-export interface JenkinsMainNodeProps extends HttpConfigProps, OidcFederateProps{
+interface DataRetentionProps {
+  readonly dataRetention?: boolean;
+  readonly efsSG?: SecurityGroup;
+}
+
+export interface JenkinsMainNodeProps extends HttpConfigProps, OidcFederateProps, AgentNodeNetworkProps, DataRetentionProps {
   readonly vpc: Vpc;
   readonly sg: SecurityGroup;
+  readonly envVarsFilePath: string;
+  readonly reloadPasswordSecretsArn: string;
+  readonly enableViews: boolean;
   readonly failOnCloudInitError?: boolean;
 }
 
 export class JenkinsMainNode {
+  static readonly BASE_JENKINS_YAML_PATH: string = join(__dirname, '../../resources/baseJenkins.yaml');
+
+  static readonly NEW_JENKINS_YAML_PATH: string = join(__dirname, '../../resources/jenkins.yaml');
+
   static readonly CERTIFICATE_FILE_PATH: String = '/etc/ssl/certs/test-jenkins.opensearch.org.crt';
 
   static readonly CERTIFICATE_CHAIN_FILE_PATH: String = '/etc/ssl/certs/test-jenkins.opensearch.org.pem';
@@ -47,23 +80,21 @@ export class JenkinsMainNode {
 
   static readonly JENKINS_DEFAULT_ID_PASS_PATH: String = '/var/lib/jenkins/secrets/myIdPassDefault';
 
-  public readonly ec2Instance: Instance;
+  private readonly EFS_ID: string;
+
+  private static ACCOUNT: string;
+
+  private static STACKREGION: string
+
+  public readonly mainNodeAsg: AutoScalingGroup;
 
   public readonly ec2InstanceMetrics: {
-    cpuTime: Metric,
     memUsed: Metric,
     foundJenkinsProcessCount: Metric
   }
 
-  constructor(stack: Stack,
-    props: JenkinsMainNodeProps,
-    agentNodeProps: AgentNodeProps,
-    agentNodeConfig: CloudAgentNodeConfig) {
+  constructor(stack: Stack, props: JenkinsMainNodeProps, agentNode: AgentNodeProps[], macAgent: string, assumeRole?: string[]) {
     this.ec2InstanceMetrics = {
-      cpuTime: new Metric({
-        metricName: 'procstat_cpu_usage',
-        namespace: `${stack.stackName}/JenkinsMainNode`,
-      }),
       memUsed: new Metric({
         metricName: 'mem_used_percent',
         namespace: `${stack.stackName}/JenkinsMainNode`,
@@ -74,11 +105,80 @@ export class JenkinsMainNode {
       }),
     };
 
+    const agentNodeConfig = new AgentNodeConfig(stack, assumeRole);
+    const jenkinsyaml = JenkinsMainNode.addConfigtoJenkinsYaml(stack, props, props, agentNodeConfig, props, agentNode, macAgent);
+    if (props.dataRetention) {
+      const efs = new FileSystem(stack, 'EFSfilesystem', {
+        vpc: props.vpc,
+        encrypted: true,
+        enableAutomaticBackups: true,
+        performanceMode: PerformanceMode.GENERAL_PURPOSE,
+        throughputMode: ThroughputMode.BURSTING,
+        securityGroup: props.efsSG,
+      });
+      this.EFS_ID = efs.fileSystemId;
+    }
+    this.mainNodeAsg = new AutoScalingGroup(stack, 'MainNodeAsg', {
+      instanceType: InstanceType.of(InstanceClass.C5, InstanceSize.XLARGE9),
+      machineImage: MachineImage.latestAmazonLinux2023({
+        cpuType: AmazonLinuxCpuType.X86_64,
+      }),
+      role: new Role(stack, 'OpenSearch-CI-MainNodeRole', {
+        roleName: 'OpenSearch-CI-MainNodeRole',
+        assumedBy: new ServicePrincipal('ec2.amazonaws.com'),
+      }),
+      initOptions: {
+        ignoreFailures: props.failOnCloudInitError ?? true,
+      },
+      vpc: props.vpc,
+      vpcSubnets: {
+        subnetType: SubnetType.PRIVATE_WITH_EGRESS,
+      },
+      minCapacity: 1,
+      maxCapacity: 1,
+      desiredCapacity: 1,
+      securityGroup: props.sg,
+      init: CloudFormationInit.fromElements(...JenkinsMainNode.configElements(
+        stack.stackName,
+        stack.region,
+        props,
+        props,
+        props,
+        jenkinsyaml,
+        props.reloadPasswordSecretsArn,
+        this.EFS_ID,
+      )),
+      blockDevices: [{
+        deviceName: '/dev/xvda',
+        volume: BlockDeviceVolume.ebs(100, { encrypted: true, deleteOnTermination: true }),
+      }],
+      signals: Signals.waitForAll({
+        timeout: Duration.minutes(20),
+      }),
+      requireImdsv2: true,
+      instanceMonitoring: Monitoring.DETAILED,
+    });
+
+    JenkinsMainNode.createPoliciesForMainNode(stack).map(
+      (policy) => this.mainNodeAsg.role.addManagedPolicy(policy),
+    );
+
+    new CfnOutput(stack, 'Jenkins Main Node Role Arn', {
+      value: this.mainNodeAsg.role.roleArn,
+      exportName: 'mainNodeRoleArn',
+    });
+  }
+
+  public static createPoliciesForMainNode(stack: Stack): (IManagedPolicy | ManagedPolicy)[] {
+    this.STACKREGION = stack.region;
+    this.ACCOUNT = stack.account;
+
     // Policy for SSM management of the host - Removes the need of SSH keys
     const ec2SsmManagementPolicy = ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore');
 
     // Policy for EC2 instance to publish logs and metrics to cloudwatch
     const cloudwatchEventPublishingPolicy = ManagedPolicy.fromAwsManagedPolicyName('CloudWatchAgentServerPolicy');
+
     const accessPolicy = ManagedPolicy.fromAwsManagedPolicyName('SecretsManagerReadWrite');
 
     // Main jenkins node will start/stop agent ec2 instances to run build jobs
@@ -88,6 +188,7 @@ export class JenkinsMainNode {
         statements: [new PolicyStatement({
           actions: [
             'ec2:DescribeSpotInstanceRequests',
+            'ec2:ModifyInstanceMetadataOptions',
             'ec2:CancelSpotInstanceRequests',
             'ec2:GetConsoleOutput',
             'ec2:RequestSpotInstances',
@@ -111,72 +212,45 @@ export class JenkinsMainNode {
             'secretsmanager:GetSecretValue',
             'secretsmanager:ListSecrets',
             'sts:AssumeRole',
+            'elasticfilesystem:DescribeFileSystems',
+            'elasticfilesystem:DescribeMountTargets',
+            'ec2:DescribeAvailabilityZones',
+            'ec2:GetPasswordData',
           ],
           resources: ['*'],
+          conditions: {
+            'ForAllValues:StringEquals': {
+              'aws:RequestedRegion': this.STACKREGION,
+              'aws:PrincipalAccount': this.ACCOUNT,
+            },
+          },
         })],
       });
-    const agentNode = new AgentNode(stack);
-    this.ec2Instance = new Instance(stack, 'MainNode', {
 
-      instanceType: InstanceType.of(InstanceClass.C5, InstanceSize.XLARGE4),
-      machineImage: MachineImage.latestAmazonLinux({
-        generation: AmazonLinuxGeneration.AMAZON_LINUX_2,
-      }),
-      initOptions: {
-        timeout: Duration.minutes(20),
-        ignoreFailures: props.failOnCloudInitError ?? true,
-      },
-      vpc: props.vpc,
-      vpcSubnets: {
-        subnetType: SubnetType.PRIVATE_WITH_NAT,
-      },
-      securityGroup: props.sg,
-      init: CloudFormationInit.fromElements(...JenkinsMainNode.configElements(
-        stack.stackName,
-        stack.region,
-        props,
-        props,
-      ), ...agentNode.configElements(stack.region, agentNodeProps, agentNodeConfig.AL2_X64, agentNodeConfig.AL2_ARM64)),
-      blockDevices: [{
-        deviceName: '/dev/xvda',
-        volume: BlockDeviceVolume.ebs(100, { encrypted: true, deleteOnTermination: true }),
-      }],
-    });
-    this.ec2Instance.role.addManagedPolicy(ec2SsmManagementPolicy);
-    this.ec2Instance.role.addManagedPolicy(cloudwatchEventPublishingPolicy);
-    this.ec2Instance.role.addManagedPolicy(mainJenkinsNodePolicy);
-    this.ec2Instance.role.addManagedPolicy(accessPolicy);
+    return [ec2SsmManagementPolicy, cloudwatchEventPublishingPolicy, accessPolicy, mainJenkinsNodePolicy];
   }
 
-  public static configElements(stackName: string, stackRegion: string, httpConfigProps: HttpConfigProps, oidcFederateProps: OidcFederateProps): InitElement[] {
+  public static configElements(stackName: string, stackRegion: string, httpConfigProps: HttpConfigProps,
+    oidcFederateProps: OidcFederateProps, dataRetentionProps: DataRetentionProps, jenkinsyaml: string,
+    reloadPasswordSecretsArn: string, efsId?: string): InitElement[] {
     return [
-      InitPackage.yum('curl'),
       InitPackage.yum('wget'),
-      InitPackage.yum('unzip'),
-      InitPackage.yum('tar'),
-      InitPackage.yum('jq'),
-      InitPackage.yum('python3'),
-      InitPackage.yum('python3-pip.noarch'),
-      InitPackage.yum('git'),
-      InitPackage.yum('java-1.8.0-openjdk'),
-      InitPackage.yum('java-1.8.0-openjdk-devel'),
+      InitPackage.yum('cronie'),
       InitPackage.yum('openssl'),
       InitPackage.yum('mod_ssl'),
-
-      //  Jenkins install is done with yum by adding a new repo
-      InitCommand.shellCommand('wget -O /etc/yum.repos.d/jenkins-stable.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo'),
-      InitCommand.shellCommand('rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io.key'),
-      //  The yum install must be triggered via shell command to ensure the order of execution
-      InitCommand.shellCommand('yum install -y jenkins-2.263.4'),
-
-      InitCommand.shellCommand('sleep 60'),
-
-      InitCommand.shellCommand(oidcFederateProps.runWithOidc
-        ? 'amazon-linux-extras install epel -y && yum -y install xmlstarlet'
-        : 'echo not installing xmlstarlet as not running with OIDC'),
-
-      // Jenkins needs to be accessible for httpd proxy
-      InitCommand.shellCommand('sed -i \'s@JENKINS_LISTEN_ADDRESS=""@JENKINS_LISTEN_ADDRESS="127.0.0.1"@g\' /etc/sysconfig/jenkins'),
+      InitPackage.yum('amazon-efs-utils'),
+      InitCommand.shellCommand('amazon-linux-extras install java-openjdk11 -y'),
+      InitPackage.yum('docker'),
+      InitPackage.yum('python3'),
+      InitPackage.yum('python3-pip.noarch'),
+      InitCommand.shellCommand('pip3 install botocore'),
+      InitCommand.shellCommand('systemctl enable crond.service'),
+      InitCommand.shellCommand('systemctl start crond.service'),
+      // eslint-disable-next-line max-len
+      InitCommand.shellCommand('sudo wget -nv https://github.com/mikefarah/yq/releases/download/v4.22.1/yq_linux_amd64 -O /usr/bin/yq && sudo chmod +x /usr/bin/yq'),
+      // eslint-disable-next-line max-len
+      InitCommand.shellCommand('sudo curl -L https://github.com/docker/compose/releases/download/v2.9.0/docker-compose-$(uname -s)-$(uname -m) -o /usr/bin/docker-compose && sudo chmod +x /usr/bin/docker-compose'),
+      InitCommand.shellCommand('python3 -m pip install --upgrade pip && python3 -m pip install cryptography boto3 requests-aws4auth'),
 
       InitCommand.shellCommand(httpConfigProps.useSsl
         // eslint-disable-next-line max-len
@@ -193,14 +267,25 @@ export class JenkinsMainNode {
         ? `mkdir /etc/ssl/private/ && aws --region ${stackRegion} secretsmanager get-secret-value --secret-id ${httpConfigProps.sslCertPrivateKeyContentsArn} --query SecretString --output text  > ${JenkinsMainNode.PRIVATE_KEY_PATH}`
         : 'echo useSsl is false, not creating key file'),
 
-      // Local reverse proxy is used, see design for details
-      // https://quip-amazon.com/jjIKA6tIPQbw/ODFE-Jenkins-Production-Cluster-JPC-High-Level-Design#BeF9CAIwx3k
+      // Local reverse proxy is used
       InitPackage.yum('httpd'),
+
+      // Change hop limit for IMDSv2 from 1 to 2
+      InitCommand.shellCommand('TOKEN=`curl -f -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600"` &&'
+      + ' instance_id=`curl -f -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id` && echo $ami_id &&'
+      + ` aws ec2 --region ${stackRegion} modify-instance-metadata-options --instance-id $instance_id --http-put-response-hop-limit 2`),
+
+      // Jenkins CVE https://www.jenkins.io/security/advisory/2024-01-24/ mitigation
+      InitCommand.shellCommand('mkdir -p /var/lib/jenkins/init.groovy.d'),
+      // eslint-disable-next-line max-len
+      InitCommand.shellCommand('sudo curl -SL https://raw.githubusercontent.com/jenkinsci-cert/SECURITY-3314-3315/55c15104fb70d6a2b46fd3f8ba7dec3913a4b1db/disable-cli.groovy -o /var/lib/jenkins/init.groovy.d/disable-cli.groovy'),
 
       // Configuration to proxy jenkins on :8080 -> :80
       InitFile.fromString('/etc/httpd/conf.d/jenkins.conf',
         httpConfigProps.useSsl
-          ? `<VirtualHost *:80>
+          // eslint-disable-next-line no-useless-escape,max-len
+          ? `LogFormat "%{X-Forwarded-For}i %h %l %u %t \\\"%r\\\" %>s %b \\\"%{Referer}i\\\" \\\"%{User-Agent}i\\\"" combined
+            <VirtualHost *:80>
                 ServerAdmin  webmaster@localhost
                 Redirect permanent / https://replace_url.com/
             </VirtualHost>
@@ -219,14 +304,16 @@ export class JenkinsMainNode {
                 </Proxy>
                 ProxyPass         /  http://localhost:8080/ nocanon
                 ProxyPassReverse  /  http://localhost:8080/
-                ProxyPassReverse  /  https://replace_url.com/
+                ProxyPassReverse  /  http://replace_url.com/
                 RequestHeader set X-Forwarded-Proto "https"
                 RequestHeader set X-Forwarded-Port "443"
             </VirtualHost>
             <IfModule mod_headers.c>
               Header unset Server
             </IfModule>`
-          : `<VirtualHost *:80>
+          // eslint-disable-next-line no-useless-escape,max-len
+          : `LogFormat "%{X-Forwarded-For}i %h %l %u %t \\\"%r\\\" %>s %b \\\"%{Referer}i\\\" \\\"%{User-Agent}i\\\"" combined
+            <VirtualHost *:80>
             ServerAdmin  webmaster@127.0.0.1
             ProxyRequests     Off
             ProxyPreserveHost On
@@ -246,6 +333,12 @@ export class JenkinsMainNode {
         ? `var=\`aws --region ${stackRegion} secretsmanager get-secret-value --secret-id ${httpConfigProps.redirectUrlArn} --query SecretString --output text\``
         + ' && sed -i "s,https://replace_url.com/,$var," /etc/httpd/conf.d/jenkins.conf'
         : 'echo Not altering the jenkins url'),
+
+      // Auto redirect http to https if ssl is enabled
+      InitCommand.shellCommand(httpConfigProps.useSsl
+        ? `var=\`aws --region ${stackRegion} secretsmanager get-secret-value --secret-id ${httpConfigProps.redirectUrlArn} --query SecretString --output text\``
+        + '&& newVar=`echo $var | sed \'s/https/http/g\'` && sed -i "s,http://replace_url.com/,$newVar," /etc/httpd/conf.d/jenkins.conf'
+        : 'echo Not altering the ProxyPassReverse url'),
 
       InitCommand.shellCommand('systemctl start httpd'),
 
@@ -268,7 +361,7 @@ export class JenkinsMainNode {
           metrics_collected: {
             procstat: [
               {
-                pattern: 'jenkins',
+                pattern: 'jenkins.war',
                 measurement: [
                   'cpu_usage',
                   'cpu_time_system',
@@ -295,101 +388,70 @@ export class JenkinsMainNode {
             files: {
               collect_list: [
                 {
-                  file_path: '/var/log/jenkins/jenkins.log',
-                  log_group_name: 'JenkinsMainNode/var/log/jenkins/jenkins.log',
+                  file_path: '/var/lib/jenkins/logs/custom/workflowRun.log',
+                  log_group_name: 'JenkinsMainNode/workflow.log',
                   auto_removal: true,
-                  log_stream_name: 'jenkins.log',
-                  //  2021-07-20 16:15:55.319+0000 [id=868]   INFO    jenkins.InitReactorRunner$1#onAttained: Completed initialization
-                  timestamp_format: '%Y-%m-%d %H:%M:%S.%f%z',
+                  log_stream_name: 'workflow-logs',
                 },
               ],
             },
           },
-          force_flush_interval: 15,
+          force_flush_interval: 5,
         },
       }),
-
       InitCommand.shellCommand('/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a stop'),
       // eslint-disable-next-line max-len
       InitCommand.shellCommand('/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s'),
 
-      // start jenkins service to generate all the default files and folders of jenkins
-      // Does not use InitService.enable() because it initialises the service after the instance is launched
-      InitCommand.shellCommand('systemctl start jenkins'),
+      InitCommand.shellCommand(dataRetentionProps.dataRetention
+        ? `mkdir /var/lib/jenkins && mount -t efs ${efsId} /var/lib/jenkins`
+        : 'echo Data rentention is disabled, not mounting efs'),
+
+      InitFile.fromFileInline('/docker-compose.yml', join(__dirname, '../../resources/docker-compose.yml')),
+
+      InitCommand.shellCommand('systemctl start docker &&'
+        + ` var=\`aws --region ${stackRegion} secretsmanager get-secret-value --secret-id ${reloadPasswordSecretsArn} --query SecretString --output text\` &&`
+        + ' yq -i \'.services.jenkins.environment[1] = "CASC_RELOAD_TOKEN=\'$var\'"\' docker-compose.yml &&'
+        + ' docker-compose up -d'),
 
       // Commands are fired one after the other but it does not wait for the command to complete.
       // Therefore, sleep 60 seconds to wait for jenkins to start
-      // This allows jenkins to generate the secrets files used for auth in jenkins-cli APIs
       InitCommand.shellCommand('sleep 60'),
 
-      // creating a default  user:password file to use to authenticate the jenkins-cli
-      // eslint-disable-next-line max-len
-      InitCommand.shellCommand(`echo -n "admin:" > ${JenkinsMainNode.JENKINS_DEFAULT_ID_PASS_PATH} && cat /var/lib/jenkins/secrets/initialAdminPassword >> ${JenkinsMainNode.JENKINS_DEFAULT_ID_PASS_PATH}`),
+      InitFile.fromFileInline('/initial_jenkins.yaml', jenkinsyaml),
 
-      // Download jenkins-cli from the local machine
-      InitCommand.shellCommand('wget -O "jenkins-cli.jar" http://localhost:8080/jnlpJars/jenkins-cli.jar'),
-
-      // install all the list of plugins from the list and restart (done in same command as restart is to be done after completion of install-plugin)
-      // eslint-disable-next-line max-len
-      ...JenkinsMainNode.createPluginInstallCommands(JenkinsPlugins.plugins),
-      // Warning : any commands after this may be executed before the above command is complete
-
-      // Commands are fired one after the other but it does not wait for the command to complete.
-      // Therefore, sleep 60 seconds to wait for plugins to install and jenkins to start which is required for the next step
-      InitCommand.shellCommand('sleep 60'),
-
-      InitFile.fromFileInline('/var/lib/jenkins/jenkins.yaml', join(__dirname, '../../resources/jenkins.yaml')),
-
-      // If devMode is false, first line extracts the oidcFederateProps as json from the secret manager
-      // xmlstarlet is used to setup the securityRealm values for oidc by editing the jenkins' config.xml file
+      // Make any changes to initial jenkins.yaml
       InitCommand.shellCommand(oidcFederateProps.runWithOidc
         // eslint-disable-next-line max-len
         ? `var=\`aws --region ${stackRegion} secretsmanager get-secret-value --secret-id ${oidcFederateProps.oidcCredArn} --query SecretString --output text\` && `
-        + 'xmlstarlet ed -L -d "/hudson/securityRealm" '
-        + '-s /hudson -t elem -n securityRealm -v " " '
-        + '-i //securityRealm -t attr -n "class" -v "org.jenkinsci.plugins.oic.OicSecurityRealm" '
-        + '-i //securityRealm -t attr -n "plugin" -v "oic-auth@1.8" '
+        + ' varkeys=`echo $var | yq \'keys\' | cut -d "-" -f2 | cut -d " " -f2` &&'
         // eslint-disable-next-line max-len
-        + `${this.oidcConfigFields().map((e) => ` -s /hudson/securityRealm -t elem -n ${e[0]} -v ${e[1] === 'replace' ? `"$(echo $var | jq -r ".${e[0]}")"` : `"${e[1]}"`}`).join(' ')}`
-        + ' /var/lib/jenkins/config.xml'
-        : 'echo Not altering the jenkins config.xml when not running with OIDC'),
+        + ' for i in $varkeys; do newvalue=`echo $var | yq .$i` && myenv=$newvalue i=$i yq -i \'.jenkins.securityRealm.oic.[env(i)]=env(myenv)\' /initial_jenkins.yaml ; done'
+        : 'echo No changes made to initial_jenkins.yaml with respect to OIDC'),
 
-      // reloading jenkins config file
-      InitCommand.shellCommand(oidcFederateProps.runWithOidc
-        ? `java -jar /jenkins-cli.jar -s http://localhost:8080 -auth @${JenkinsMainNode.JENKINS_DEFAULT_ID_PASS_PATH} reload-configuration`
-        : 'echo not reloading jenkins config when not running with OIDC'),
+      InitCommand.shellCommand('while [[ "$(curl -s -o /dev/null -w \'\'%{http_code}\'\' localhost:8080/api/json?pretty)" != "200" ]]; do sleep 5; done'),
+
+      // Reload configuration via Jenkins.yaml
+      InitCommand.shellCommand('cp /initial_jenkins.yaml /var/lib/jenkins/jenkins.yaml &&'
+        + ` var=\`aws --region ${stackRegion} secretsmanager get-secret-value --secret-id ${reloadPasswordSecretsArn} --query SecretString --output text\` &&`
+        + ' curl  -f -X POST "http://localhost:8080/reload-configuration-as-code/?casc-reload-token=$var"'),
     ];
   }
 
-  /** Creates the commands to install plugins, typically done in blocks */
-  public static createPluginInstallCommands(pluginList: string[]): InitCommand[] {
-    const pluginInstallBlockSize = 10;
-    const jenkinsCliCommand = `java -jar /jenkins-cli.jar -s http://localhost:8080 -auth @${JenkinsMainNode.JENKINS_DEFAULT_ID_PASS_PATH}`;
-    const pluginListCopy = Object.assign([], pluginList);
-    const pluginListSlices: String[] = [];
-    do {
-      pluginListSlices.push(pluginListCopy.splice(0, pluginInstallBlockSize).join(' '));
-    } while (pluginListCopy.length !== 0);
-
-    return pluginListSlices.map((slice, index) => {
-      const extraCommand = (index === pluginListSlices.length - 1) ? `&& ${jenkinsCliCommand} restart` : '';
-      return InitCommand.shellCommand(`${jenkinsCliCommand} install-plugin ${slice} ${extraCommand}`);
-    });
-  }
-
-  public static oidcConfigFields() : string[][] {
-    return [['clientId', 'replace'],
-      ['clientSecret', 'replace'],
-      ['wellKnownOpenIDConfigurationUrl', 'replace'],
-      ['tokenServerUrl', 'replace'],
-      ['authorizationServerUrl', 'replace'],
-      ['userInfoServerUrl', 'replace'],
-      ['userNameField', 'sub'],
-      ['scopes', 'openid'],
-      ['disableSslVerification', 'false'],
-      ['logoutFromOpenidProvider', 'true'],
-      ['postLogoutRedirectUrl', ''],
-      ['escapeHatchEnabled', 'false'],
-      ['escapeHatchSecret', 'random']];
+  public static addConfigtoJenkinsYaml(stack: Stack, jenkinsMainNodeProps: JenkinsMainNodeProps, oidcProps: OidcFederateProps, agentNodeObject: AgentNodeConfig,
+    props: AgentNodeNetworkProps, agentNode: AgentNodeProps[], macAgent: string): string {
+    let updatedConfig = agentNodeObject.addAgentConfigToJenkinsYaml(stack, agentNode, props, macAgent);
+    if (oidcProps.runWithOidc) {
+      updatedConfig = OidcConfig.addOidcConfigToJenkinsYaml(updatedConfig, oidcProps.adminUsers);
+    }
+    if (jenkinsMainNodeProps.envVarsFilePath !== '' && jenkinsMainNodeProps.envVarsFilePath != null) {
+      updatedConfig = EnvConfig.addEnvConfigToJenkinsYaml(updatedConfig, jenkinsMainNodeProps.envVarsFilePath);
+    }
+    if (jenkinsMainNodeProps.enableViews) {
+      updatedConfig = ViewsConfig.addViewsConfigToJenkinsYaml(updatedConfig);
+    }
+    const newConfig = dump(updatedConfig);
+    writeFileSync(JenkinsMainNode.NEW_JENKINS_YAML_PATH, newConfig, 'utf-8');
+    return JenkinsMainNode.NEW_JENKINS_YAML_PATH;
   }
 }
