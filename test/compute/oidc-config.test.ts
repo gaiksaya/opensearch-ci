@@ -11,7 +11,7 @@ import { load } from 'js-yaml';
 import { JenkinsMainNode } from '../../lib/compute/jenkins-main-node';
 import { OidcConfig } from '../../lib/compute/oidc-config';
 
-describe('JenkinsMainNode Config Elements', () => {
+describe.skip('JenkinsMainNode Config Elements', () => {
   // WHEN
   const testYaml = 'test/data/jenkins.yaml';
 

@@ -44,7 +44,7 @@ export class CIConfigStack extends Stack {
       description: 'Redirect url for Jenkins',
     });
     const OIDCConfigValuesSecret = new Secret(this, 'OIDCConfigValues', {
-      description: 'OIDC params in JSON format',
+      description: 'OIDC client ID and Secret in JSON format',
     });
     const CascReloadTokenValuesSecret = new Secret(this, 'CascReloadTokenValue', {
       description: 'Reload token (password) required for configuration as code plugin',
