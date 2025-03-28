@@ -7,7 +7,6 @@ on:
 
 jobs:
   docker:
-    if: github.repository == 'opensearch-project/opensearch-ci'
     runs-on: ubuntu-latest
     steps:
       -
@@ -29,4 +28,4 @@ jobs:
           platforms: linux/amd64,linux/arm64
           context: "{{defaultContext}}:docker"
           push: true
-          tags: opensearchstaging/jenkins:2.426.3-lts-jdk21,opensearchstaging/jenkins:latest
+          tags: sayali/jenkins:2.426.3-lts-jdk21,sayali/jenkins:latest
