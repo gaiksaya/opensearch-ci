@@ -358,7 +358,7 @@ test('LoadBalancer Access Logging', () => {
                     'Arn',
                   ],
                 },
-                '/loadBalancerAccessLogs/*',
+                '/*',
               ],
             ],
           },
@@ -437,14 +437,14 @@ test('WAF rules', () => {
         Priority: 0,
         Statement: {
           IPSetReferenceStatement:
-              {
-                Arn: {
-                  'Fn::GetAtt': [
-                    'GitHubIpv4Set',
-                    'Arn',
-                  ],
-                },
-              },
+          {
+            Arn: {
+              'Fn::GetAtt': [
+                'GitHubIpv4Set',
+                'Arn',
+              ],
+            },
+          },
         },
         VisibilityConfig: {
           CloudWatchMetricsEnabled: true,
@@ -457,14 +457,14 @@ test('WAF rules', () => {
         Priority: 1,
         Statement: {
           IPSetReferenceStatement:
-              {
-                Arn: {
-                  'Fn::GetAtt': [
-                    'GitHubIpv6Set',
-                    'Arn',
-                  ],
-                },
-              },
+          {
+            Arn: {
+              'Fn::GetAtt': [
+                'GitHubIpv6Set',
+                'Arn',
+              ],
+            },
+          },
         },
         VisibilityConfig: {
           CloudWatchMetricsEnabled: true,

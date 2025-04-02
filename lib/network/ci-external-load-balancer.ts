@@ -75,7 +75,7 @@ export class JenkinsExternalLoadBalancer {
         principals: [
           new ServicePrincipal('logdelivery.elasticloadbalancing.amazonaws.com'),
         ],
-        resources: [`${props.accessLogBucket.bucketArn}/${accessLoggingPrefix}/*`],
+        resources: [`${props.accessLogBucket.bucketArn}/*`],
 
       }),
     );
