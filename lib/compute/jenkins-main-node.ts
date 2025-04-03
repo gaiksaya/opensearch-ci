@@ -28,7 +28,7 @@ import {
 } from 'aws-cdk-lib/aws-ec2';
 import { FileSystem, PerformanceMode, ThroughputMode } from 'aws-cdk-lib/aws-efs';
 import {
-  IManagedPolicy, ManagedPolicy, PolicyStatement, Role, ServicePrincipal,
+  CompositePrincipal, IManagedPolicy, ManagedPolicy, PolicyStatement, Role, ServicePrincipal,
 } from 'aws-cdk-lib/aws-iam';
 import { writeFileSync } from 'fs';
 import { dump } from 'js-yaml';
@@ -124,7 +124,10 @@ export class JenkinsMainNode {
       }),
       role: new Role(stack, 'OpenSearch-CI-MainNodeRole', {
         roleName: 'OpenSearch-CI-MainNodeRole',
-        assumedBy: new ServicePrincipal('ec2.amazonaws.com'),
+        assumedBy: new CompositePrincipal(
+          new ServicePrincipal('ec2.amazonaws.com'),
+          new ServicePrincipal('vpc-flow-logs.amazonaws.com'),
+        ),
       }),
       initOptions: {
         ignoreFailures: props.failOnCloudInitError ?? true,
@@ -206,8 +209,11 @@ export class JenkinsMainNode {
             'ec2:DescribeSubnets',
             'iam:ListInstanceProfilesForRole',
             'iam:PassRole',
-            'logs:CreateLogDelivery',
-            'logs:DeleteLogDelivery',
+            'logs:CreateLogGroup',
+            'logs:CreateLogStream',
+            'logs:PutLogEvents',
+            'logs:DescribeLogGroups',
+            'logs:DescribeLogStreams',
             'secretsmanager:GetSecretValue',
             'secretsmanager:ListSecrets',
             'sts:AssumeRole',
